@@ -14,6 +14,8 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <stdbool.h>
+#include <stdlib.h>
+#include <pthread.h>
 
 #include "tiniConfig.h"
 #include "tiniLicense.h"
@@ -127,6 +129,8 @@ To fix the problem, "
 "set the environment variable " SUBREAPER_ENV_VAR " to register Tini as a child subreaper, or "
 #endif
 "run Tini as PID 1.";
+
+static pid_t child_pid=0;
 
 int restore_signals(const signal_configuration_t* const sigconf_ptr) {
 	if (sigprocmask(SIG_SETMASK, sigconf_ptr->sigmask_ptr, NULL)) {
@@ -538,12 +542,13 @@ int wait_and_forward_signal(sigset_t const* const parent_sigset_ptr, pid_t const
 	return 0;
 }
 
-int reap_zombies(const pid_t child_pid, int* const child_exitcode_ptr) {
+void* reap_zombies(void *arg) {
 	pid_t current_pid;
 	int current_status;
+	int* child_exitcode_ptr = malloc(sizeof(int));
 
 	while (1) {
-		current_pid = waitpid(-1, &current_status, WNOHANG);
+		current_pid = waitpid(-1, &current_status, 0);
 
 		switch (current_pid) {
 
@@ -553,7 +558,7 @@ int reap_zombies(const pid_t child_pid, int* const child_exitcode_ptr) {
 					break;
 				}
 				PRINT_FATAL("Error while waiting for pids: '%s'", strerror(errno));
-				return 1;
+				break;
 
 			case 0:
 				PRINT_TRACE("No child to reap");
@@ -577,7 +582,7 @@ int reap_zombies(const pid_t child_pid, int* const child_exitcode_ptr) {
 						*child_exitcode_ptr = 128 + WTERMSIG(current_status);
 					} else {
 						PRINT_FATAL("Main child exited for unknown reason");
-						return 1;
+						exit(1);
 					}
 
 					// Be safe, ensure the status code is indeed between 0 and 255.
@@ -599,13 +604,12 @@ int reap_zombies(const pid_t child_pid, int* const child_exitcode_ptr) {
 		/* If we make it here, that's because we did not continue in the switch case. */
 		break;
 	}
-
-	return 0;
+	exit(*child_exitcode_ptr);
 }
 
 
 int main(int argc, char *argv[]) {
-	pid_t child_pid;
+	// pid_t child_pid;
 
 	// Those are passed to functions to get an exitcode back.
 	int child_exitcode = -1;  // This isn't a valid exitcode, and lets us tell whether the child has exited.
@@ -660,6 +664,11 @@ int main(int argc, char *argv[]) {
 	if (spawn_ret) {
 		return spawn_ret;
 	}
+	pthread_t ptid;
+	int err = pthread_create(&ptid, NULL, &reap_zombies, NULL);
+	if (err !=0 ){
+		return 1;
+	}
 	free(child_args_ptr);
 
 	while (1) {
@@ -669,9 +678,9 @@ int main(int argc, char *argv[]) {
 		}
 
 		/* Now, reap zombies */
-		if (reap_zombies(child_pid, &child_exitcode)) {
-			return 1;
-		}
+		// if (reap_zombies(child_pid, &child_exitcode)) {
+		// 	return 1;
+		// }
 
 		if (child_exitcode != -1) {
 			PRINT_TRACE("Exiting: child has exited");
